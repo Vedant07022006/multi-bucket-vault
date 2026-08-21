@@ -1,26 +1,33 @@
 {
-  "name": "backend",
+  "name": "multi-bucket-vault-backend",
   "version": "1.0.0",
-  "description": "a backend at vedant's VS code",
+  "description": "PoolDrive — multi-bucket virtual cloud drive backend",
   "type": "module",
-  "main": "index.js",
+  "main": "src/server.js",
   "scripts": {
-    "dev": "nodemon src/index.js",
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "worker": "node src/modules/rebalance/rebalance.worker.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Vedant",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/s3-request-presigner": "^3.0.0",
     "bcrypt": "^6.0.0",
+    "bullmq": "^5.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-mongo-sanitize": "^2.2.0",
-    "express-rate-limit": "^8.6.2",
     "helmet": "^8.3.0",
+    "ioredis": "^5.0.0",
+    "joi": "^17.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.3",
+    "multer": "^1.4.5-lts.1",
     "nodemailer": "^9.0.5"
   },
   "devDependencies": {
