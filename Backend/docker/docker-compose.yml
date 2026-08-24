@@ -1,0 +1,162 @@
+version: "3.9"
+
+# ─── Shared network ───────────────────────────────────────────────────────────
+networks:
+  pooldrive:
+    driver: bridge
+
+# ─── Shared volume for MinIO data ─────────────────────────────────────────────
+volumes:
+  minio1_data:
+  minio2_data:
+  minio3_data:
+  mongo_data:
+  redis_data:
+
+services:
+
+  # ── MongoDB ──────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7
+    container_name: pooldrive-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - pooldrive
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Redis ─────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: pooldrive-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - pooldrive
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── MinIO Bucket 1 ────────────────────────────────────────────────────────────
+  minio1:
+    image: minio/minio:latest
+    container_name: pooldrive-minio1
+    restart: unless-stopped
+    ports:
+      - "9001:9000"   # S3 API
+      - "9101:9090"   # MinIO console UI
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server /data --console-address ":9090"
+    volumes:
+      - minio1_data:/data
+    networks:
+      - pooldrive
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── MinIO Bucket 2 ────────────────────────────────────────────────────────────
+  minio2:
+    image: minio/minio:latest
+    container_name: pooldrive-minio2
+    restart: unless-stopped
+    ports:
+      - "9002:9000"
+      - "9102:9090"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server /data --console-address ":9090"
+    volumes:
+      - minio2_data:/data
+    networks:
+      - pooldrive
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── MinIO Bucket 3 ────────────────────────────────────────────────────────────
+  minio3:
+    image: minio/minio:latest
+    container_name: pooldrive-minio3
+    restart: unless-stopped
+    ports:
+      - "9003:9000"
+      - "9103:9090"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server /data --console-address ":9090"
+    volumes:
+      - minio3_data:/data
+    networks:
+      - pooldrive
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── PoolDrive API Server ───────────────────────────────────────────────────────
+  # Scale with: docker-compose up --scale api=3
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: pooldrive-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pooldrive
+
+  # ── Rebalance Worker (separate process) ───────────────────────────────────────
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: pooldrive-worker
+    restart: unless-stopped
+    command: node src/modules/rebalance/rebalance.worker.js
+    env_file:
+      - ../.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pooldrive
