@@ -139,112 +139,19 @@ Every incoming HTTP request traverses the Express middleware chain in strict ord
 
 #### 1. Authentication & Session Flow
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor U as User
-    C as Client App
-    A as Express API
-    R as Redis
-    M as MongoDB
-
-    U->>C: Submit signup form
-    C->>A: POST /api/auth/signup (Joi validated)
-    A->>M: Check email uniqueness (409 if taken)
-    A->>A: bcrypt.hash(password, 12 rounds)
-    A->>M: Create User (passwordHash, select:false)
-    A->>R: SET session:refresh:<userId> EX 10d
-    A-->>C: 201 — accessToken + refreshToken + sanitized user
-
-    U->>C: Login again later
-    C->>A: POST /api/auth/login
-    A->>M: Fetch user (+passwordHash)
-    A->>A: bcrypt.compare()
-    A->>R: Upsert refresh session (TTL = refresh expiry)
-    A-->>C: 200 — new token pair
-
-    C->>A: POST /api/auth/refresh { refreshToken }
-    A->>R: GET session:refresh:<userId>
-    alt Token matches live Redis session
-        A-->>C: 200 — fresh accessToken
-    else Revoked / expired
-        A-->>C: 401 — re-authenticate
-    end
-
-    U->>C: Logout
-    C->>A: POST /api/auth/logout (Bearer access token)
-    A->>R: DEL session:refresh:<userId>
-    A-->>C: 200 — session destroyed globally
-```
+![auth session flow](assets/auth-session-flow.png)
 
 #### 2. Upload Pipeline — Chunking, Deduplication & Placement
 
-```mermaid
-flowchart TD
-    A["Client: POST /api/files/upload<br/>(multipart, ≤20/min rate limit,<br/>Multer memory buffer)"] --> B[Step 1: ValidateStep<br/>size ≤ MAX_FILE_SIZE_BYTES,<br/>mimetype allowlist]
-
-    B --> C{"Step 2: ChunkStep<br/>file size ≤ max free space<br/>across active buckets?"}
-    C -- "Yes — fits whole" --> D["Single-piece mode<br/>isChunked = false"]
-    C -- "No — must split" --> E["Content-defined chunking<br/>Rabin-Karp rolling hash<br/>~5 MB boundaries"]
-
-    D --> F
-    E --> F["Step 3: DedupCheckStep<br/>per chunk SHA-256 hash"]
-
-    F --> G{"Stage 1: Bloom Filter<br/>mightContain(hash)?"}
-    G -- "Definitely new" --> J["Mark skipUpload = false"]
-    G -- "Maybe seen" --> H{"Stage 2: DB lookup<br/>dedup.repository"}
-    H -- "Duplicate found" --> I["skipUpload = true<br/>link to existing bucketId/key"]
-    H -- "False positive" --> J
-
-    J --> K{"Step 4: BinPackStep<br/>strategy = bestFit | leastUsed"}
-    K --> L["Assign bucketId +<br/>key = owner/uuid"]
-    I --> M
-
-    L --> M["Step 5: UploadToBucketStep<br/>build S3Client per bucket<br/>(AES-decrypted credentials)<br/>PUT object"]
-    M --> N["Step 6: SaveMetadataStep<br/>File doc: chunks[] + merkleRoot<br/>update bucket usedBytes<br/>emit nearFull if ≥ threshold"]
-
-    N --> O["Respond: file metadata +<br/>pre-signed URLs (15 min TTL)"]
-    O --> P["Browser uploads bytes<br/>DIRECTLY to bucket"]
-```
+![upload pipeline](assets/upload-pipeline.png)
 
 #### 3. Download & Integrity Verification
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as Client
-    participant A as Express API
-    participant B as Bucket Pool
-
-    C->>A: GET /api/files/:id/download
-    A->>A: Verify ownership (ownerId === req.user)
-    alt Chunked file
-        A->>B: Presigned GET per chunk (parallel URLs)
-        A-->>C: Ordered chunk URL list + hashes + merkleRoot
-        C->>B: Fetch all chunks in parallel
-        C->>C: Reassemble + verify each chunk hash,<br/>optionally validate Merkle proof
-    else Single-piece file
-        A->>B: One presigned GET
-        A-->>C: Single download URL
-    end
-```
+![download verification](assets/download-verification.png)
 
 #### 4. Automated Rebalance (Self-Healing Capacity)
 
-```mermaid
-flowchart TD
-    A["SaveMetadataStep detects<br/>usedBytes/capacity ≥ 0.85"] --> B["bucketEvents.emit('bucket:nearFull')<br/>(Observer pattern)"]
-    B --> C["server.js subscriber<br/>addRebalanceJob({ bucketId })"]
-    C --> D["BullMQ 'rebalance-jobs' queue<br/>3 attempts · exp. backoff 5s/10s/20s"]
-    D --> E["Rebalance Worker<br/>(separate Node process)"]
-    E --> F["selectFilesToMigrate:<br/>MinHeap used as MaxHeap by size<br/>largest files first (limit 10)"]
-    F --> G["For each candidate file:<br/>1. Download from source bucket<br/>2. Upload to least-loaded target<br/>3. Update File metadata + both buckets' usage<br/>4. Delete original object"]
-    G --> H{More overloaded<br/>buckets above threshold?}
-    H -- Yes --> F
-    H -- No --> I["Queue drained — pool balanced"]
-
-    J["npm run worker / worker container"] -.powers.-> E
-```
+![rebalance flow](assets/rebalance-flow.png)
 
 ---
 
